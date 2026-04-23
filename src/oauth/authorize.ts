@@ -15,15 +15,17 @@ import { getClient, issueAuthCode, verifyUserCredentials } from './store.js';
 // Helpers
 // ---------------------------------------------------------------------------
 
-const AuthorizeQuerySchema = z.object({
-  response_type: z.literal('code'),
-  client_id: z.string().min(1),
-  redirect_uri: z.string().url(),
-  code_challenge: z.string().min(43).max(128),
-  code_challenge_method: z.literal('S256'),
-  state: z.string().optional(),
-  scope: z.string().optional(),
-});
+const AuthorizeQuerySchema = z
+  .object({
+    response_type: z.literal('code'),
+    client_id: z.string().min(1),
+    redirect_uri: z.string().min(1),
+    code_challenge: z.string().min(43).max(128),
+    code_challenge_method: z.literal('S256'),
+    state: z.string().optional(),
+    scope: z.string().optional(),
+  })
+  .passthrough();
 
 type AuthorizeQuery = z.infer<typeof AuthorizeQuerySchema>;
 

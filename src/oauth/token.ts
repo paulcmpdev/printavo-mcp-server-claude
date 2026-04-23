@@ -37,13 +37,16 @@ function verifyPkce(verifier: string, challenge: string): boolean {
 // Request schemas
 // ---------------------------------------------------------------------------
 
-const AuthCodeGrantSchema = z.object({
-  grant_type: z.literal('authorization_code'),
-  code: z.string().min(1),
-  redirect_uri: z.string().url(),
-  client_id: z.string().min(1),
-  code_verifier: z.string().min(43).max(128),
-});
+const AuthCodeGrantSchema = z
+  .object({
+    grant_type: z.literal('authorization_code'),
+    code: z.string().min(1),
+    redirect_uri: z.string().min(1),
+    client_id: z.string().min(1),
+    code_verifier: z.string().min(43).max(128),
+    client_secret: z.string().optional(),
+  })
+  .passthrough();
 
 const RefreshGrantSchema = z.object({
   grant_type: z.literal('refresh_token'),
