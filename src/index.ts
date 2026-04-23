@@ -12,6 +12,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { ALL_TOOL_NAMES, registerAllTools } from './tools/index.js';
 import { buildMcpAuthMiddleware } from './auth.js';
 import { logger } from './logger.js';
+import { registerOAuthRoutes } from './oauth/index.js';
+import { loadUsers } from './oauth/store.js';
 
 const SERVER_NAME = 'printavo-mcp-server-claude';
 const SERVER_VERSION = '2.0.0';
@@ -20,13 +22,37 @@ const SERVER_VERSION = '2.0.0';
 // Environment validation
 // ---------------------------------------------------------------------------
 
-const REQUIRED_ENV = ['PRINTAVO_EMAIL', 'PRINTAVO_API_TOKEN', 'MCP_API_KEY'] as const;
+const REQUIRED_ENV = [
+  'PRINTAVO_EMAIL',
+  'PRINTAVO_API_TOKEN',
+  'OAUTH_ISSUER_URL',
+  'OAUTH_JWT_SECRET',
+  'OAUTH_USERS',
+] as const;
 
 function validateEnv(): void {
   const missing = REQUIRED_ENV.filter((key) => !process.env[key]);
   if (missing.length > 0) {
     logger.fatal({ missing }, 'Missing required environment variables');
     process.exit(1);
+  }
+
+  // Validate OAUTH_USERS parses and has ≥1 entry
+  try {
+    const users = loadUsers();
+    if (users.length === 0) {
+      logger.fatal('OAUTH_USERS must contain at least one user');
+      process.exit(1);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.fatal({ err: msg }, 'OAUTH_USERS is invalid');
+    process.exit(1);
+  }
+
+  // MCP_API_KEY is optional (debug fallback).
+  if (!process.env.MCP_API_KEY) {
+    logger.info('MCP_API_KEY not set — OAuth tokens are required (no debug fallback).');
   }
 }
 
@@ -75,13 +101,21 @@ function corsMiddleware(req: Request, res: Response, next: NextFunction): void {
 
 export function buildApp(): express.Express {
   const app = express();
+  // OAuth /token + /authorize POST use urlencoded bodies; /mcp + DCR use JSON.
   app.use(express.json({ limit: '1mb' }));
+  app.use(express.urlencoded({ extended: false }));
   app.use(corsMiddleware);
 
-  const mcpAuthMiddleware = buildMcpAuthMiddleware(process.env.MCP_API_KEY ?? '');
+  // OAuth routes (metadata, DCR, authorize, token) — no auth required on these.
+  registerOAuthRoutes(app);
+
+  const mcpAuthMiddleware = buildMcpAuthMiddleware({
+    staticApiKey: process.env.MCP_API_KEY,
+  });
 
   // Health check — public
   app.get('/', (_req, res) => {
+    const issuer = process.env.OAUTH_ISSUER_URL ?? '';
     res.json({
       name: SERVER_NAME,
       version: SERVER_VERSION,
@@ -89,6 +123,12 @@ export function buildApp(): express.Express {
       mode: 'stateless',
       transport: 'streamable-http',
       endpoint: '/mcp',
+      auth: {
+        oauth: {
+          metadata: issuer ? `${issuer.replace(/\/$/, '')}/.well-known/oauth-protected-resource` : null,
+        },
+        static_fallback: Boolean(process.env.MCP_API_KEY),
+      },
       tools: ALL_TOOL_NAMES,
       toolCount: ALL_TOOL_NAMES.length,
     });

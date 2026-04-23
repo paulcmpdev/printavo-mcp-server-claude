@@ -62,21 +62,48 @@ Required environment variables:
 |----------|---------|
 | `PRINTAVO_EMAIL` | Your Printavo login email |
 | `PRINTAVO_API_TOKEN` | Your Printavo API token |
-| `MCP_API_KEY` | Bearer token clients must present to call `/mcp` |
+| `OAUTH_ISSUER_URL` | Public base URL of this server (e.g. `https://your-app.up.railway.app`), no trailing slash |
+| `OAUTH_JWT_SECRET` | Signing secret for access-token JWTs (32+ bytes random) |
+| `OAUTH_USERS` | JSON array of `{"email", "password_hash"}` — the humans allowed to log in |
 
 Optional:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
+| `MCP_API_KEY` | _(unset)_ | Static Bearer key accepted alongside OAuth JWTs — debug/curl fallback |
 | `PORT` | `3000` | HTTP port |
 | `ALLOWED_ORIGINS` | `*` | Comma-separated CORS origins |
 | `LOG_LEVEL` | `info` | Pino log level |
 | `NODE_ENV` | `development` | `production` switches Pino to JSON |
 
-Generate a strong `MCP_API_KEY`:
+Generate secrets:
 
 ```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+# JWT signing secret
+node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+
+# bcrypt hash for a new user
+node -e "console.log(require('bcryptjs').hashSync('the-password', 12))"
+```
+
+## Authentication
+
+The server accepts two auth methods on `POST /mcp`:
+
+1. **OAuth 2.1 Bearer (primary, used by Claude).** Clients discover the authorization server via `/.well-known/oauth-protected-resource`, optionally auto-register via `POST /register` (RFC 7591 Dynamic Client Registration), redirect the user to `/authorize` for email/password login + PKCE, then exchange the code at `/token` for an HS256 JWT access token and rotating refresh token. The JWT is presented on every `/mcp` call.
+
+2. **Static `MCP_API_KEY` (optional).** If the env var is set, any matching Bearer token is accepted. Intended for curl testing, CI, or recovery — leave unset in production for OAuth-only operation.
+
+Access tokens are JWTs (`aud` = `<issuer>/mcp`, `iss` = issuer URL, `sub` = user email, 1h expiry). Refresh tokens are opaque random strings with 30-day expiry. All OAuth state (registered clients, auth codes, refresh tokens) is in-memory — a redeploy forces re-authentication. For persistence, swap in a Postgres-backed store (`src/oauth/store.ts`).
+
+Adding more users:
+
+```bash
+# 1. Generate a hash for the new user's password:
+node -e "console.log(require('bcryptjs').hashSync('their-password', 12))"
+# 2. Append their entry to OAUTH_USERS in Railway / your env:
+# [{"email":"a@x.com","password_hash":"$2b$..."},{"email":"b@x.com","password_hash":"$2b$..."}]
+# 3. Redeploy.
 ```
 
 ### Build and run
