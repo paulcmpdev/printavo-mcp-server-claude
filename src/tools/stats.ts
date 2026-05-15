@@ -22,6 +22,41 @@ interface StatusBreakdownEntry {
   pieces: number;
 }
 
+export interface FilterUsableOrdersResult {
+  orders: Quote[];
+  omittedEmptyRecords: number;
+}
+
+function isUsableOrderRecord(order: Quote): boolean {
+  return Boolean(order.id || order.visualId);
+}
+
+export function filterUsableOrders(orders: Quote[]): FilterUsableOrdersResult {
+  const usableOrders = orders.filter(isUsableOrderRecord);
+  return {
+    orders: usableOrders,
+    omittedEmptyRecords: orders.length - usableOrders.length,
+  };
+}
+
+function addOneCalendarDay(isoDate: string): string {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  const date = new Date(Date.UTC(year!, month! - 1, day!));
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().split('T')[0]!;
+}
+
+export function buildProductionScheduleVariables(
+  startDate: string,
+  endDate: string,
+): Record<string, unknown> {
+  return {
+    first: 25,
+    inProductionAfter: startDate,
+    inProductionBefore: addOneCalendarDay(endDate),
+  };
+}
+
 export function registerStatsTools(server: McpServer): void {
   server.registerTool(
     'printavo_get_order_stats',
@@ -51,7 +86,8 @@ Pagination is automatic — pulls up to 50 pages * 25 = 1,250 orders.`,
       };
       if (args.status_ids?.length) variables.statusIds = args.status_ids;
 
-      const nodes = await paginateQuery<Quote>(ORDERS_PAGINATED_QUERY, variables, 'orders', 50);
+      const paginatedNodes = await paginateQuery<Quote>(ORDERS_PAGINATED_QUERY, variables, 'orders', 50);
+      const { orders: nodes, omittedEmptyRecords } = filterUsableOrders(paginatedNodes);
 
       if (nodes.length === 0) {
         const msg = `No orders found between ${args.start_date} and ${args.end_date}.`;
@@ -88,6 +124,7 @@ Pagination is automatic — pulls up to 50 pages * 25 = 1,250 orders.`,
         avg_order_value: totalRevenue / nodes.length,
         avg_pieces_per_order: totalPieces / nodes.length,
         by_status: statusBreakdown,
+        omitted_empty_records: omittedEmptyRecords,
       };
 
       let text: string;
@@ -102,6 +139,9 @@ Pagination is automatic — pulls up to 50 pages * 25 = 1,250 orders.`,
           `- **Total Pieces**: ${totalPieces}`,
           `- **Avg Order Value**: ${formatCurrency(totalRevenue / nodes.length)}`,
           `- **Avg Pieces/Order**: ${(totalPieces / nodes.length).toFixed(1)}`,
+          ...(omittedEmptyRecords > 0
+            ? [`- **Omitted Empty Records**: ${omittedEmptyRecords}`]
+            : []),
           '',
           '## By Status',
         ];
@@ -142,28 +182,35 @@ Defaults: start = today, end = today + 14 days. Optionally exclude statuses
       const start_date = args.start_date ?? today.toISOString().split('T')[0]!;
       const end_date = args.end_date ?? defaultEnd.toISOString().split('T')[0]!;
 
-      const variables: Record<string, unknown> = {
-        first: 25,
-        inProductionAfter: start_date,
-        inProductionBefore: end_date,
-      };
-      let nodes = await paginateQuery<Quote>(ORDERS_PAGINATED_QUERY, variables, 'orders', 20);
+      const variables = buildProductionScheduleVariables(start_date, end_date);
+      const paginatedNodes = await paginateQuery<Quote>(ORDERS_PAGINATED_QUERY, variables, 'orders', 20);
+      let { orders: nodes, omittedEmptyRecords } = filterUsableOrders(paginatedNodes);
 
       if (args.exclude_status_ids?.length) {
         const excl = new Set(args.exclude_status_ids.map(String));
         nodes = nodes.filter((o) => !excl.has(String(o.status?.id)));
       }
 
-      const structured = { start_date, end_date, count: nodes.length, orders: nodes };
+      const structured = {
+        start_date,
+        end_date,
+        count: nodes.length,
+        orders: nodes,
+        omitted_empty_records: omittedEmptyRecords,
+      };
 
       let text: string;
       if (args.response_format === ResponseFormat.JSON) {
         text = JSON.stringify(structured, null, 2);
       } else if (nodes.length === 0) {
-        text = `No orders in production between ${start_date} and ${end_date}.`;
+        text = [
+          `No orders in production between ${start_date} and ${end_date}.`,
+          ...(omittedEmptyRecords > 0 ? [`Omitted ${omittedEmptyRecords} empty Printavo records.`] : []),
+        ].join('\n');
       } else {
         const lines: string[] = [
           `# Production Schedule: ${start_date} → ${end_date} (${nodes.length} orders)`,
+          ...(omittedEmptyRecords > 0 ? [``, `Omitted empty Printavo records: ${omittedEmptyRecords}`] : []),
           '',
         ];
         for (const o of nodes) {
