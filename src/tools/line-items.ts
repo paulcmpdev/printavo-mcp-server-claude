@@ -13,6 +13,7 @@ import {
   LINE_ITEM_UPDATE_MUTATION,
 } from '../services/queries.js';
 import {
+  buildReplacementSizesInput,
   formatCurrency,
   formatSizes,
   parseSizesToInput,
@@ -160,7 +161,7 @@ NOTE: position is required by the Printavo API — get it from printavo_get_invo
       const args: UpdateLineItemSizesInput = UpdateLineItemSizesSchema.parse(rawArgs);
       const input = {
         position: args.position,
-        sizes: parseSizesToInput(args.sizes),
+        sizes: buildReplacementSizesInput(args.sizes),
       };
       const data = await executeQuery<LineItemMutationResponse>(LINE_ITEM_UPDATE_MUTATION, {
         id: args.id,

@@ -72,6 +72,7 @@ export const SIZE_NAME_TO_ENUM: Record<string, string> = {
 };
 
 const VALID_SIZE_ENUMS = new Set(Object.values(SIZE_NAME_TO_ENUM));
+const ALL_SIZE_ENUMS = Array.from(VALID_SIZE_ENUMS);
 
 const VALID_SIZE_KEYS = Array.from(
   new Set(Object.keys(SIZE_NAME_TO_ENUM).map((k) => k.toUpperCase())),
@@ -94,6 +95,20 @@ export function parseSizesToInput(sizes: Record<string, number | string>): SizeC
     result.push({ size: enumValue, count: intCount });
   }
   return result;
+}
+
+/** Build a complete size payload because Printavo merges, rather than replaces, size rows. */
+export function buildReplacementSizesInput(
+  sizes: Record<string, number | string>,
+): SizeCount[] {
+  const requested = parseSizesToInput(sizes);
+  if (requested.length !== Object.keys(sizes).length) {
+    throw new Error('Replacement requires a valid size count for every supplied size.');
+  }
+
+  const replacement = new Map(ALL_SIZE_ENUMS.map((size) => [size, 0]));
+  for (const { size, count } of requested) replacement.set(size, count);
+  return Array.from(replacement, ([size, count]) => ({ size, count }));
 }
 
 /** CHARACTER_LIMIT-aware truncation helper for Markdown responses. */

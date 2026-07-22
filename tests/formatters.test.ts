@@ -4,6 +4,7 @@ import {
   formatDate,
   formatAddress,
   formatSizes,
+  buildReplacementSizesInput,
   parseSizesToInput,
   truncateMarkdown,
 } from '../src/services/formatters.js';
@@ -77,6 +78,21 @@ describe('parseSizesToInput', () => {
   it('skips negative or NaN counts silently', () => {
     expect(parseSizesToInput({ S: -1 })).toEqual([]);
     expect(parseSizesToInput({ S: 'abc' })).toEqual([]);
+  });
+});
+
+describe('buildReplacementSizesInput', () => {
+  it('zeros omitted sizes so an existing OTHER quantity is cleared', () => {
+    const result = buildReplacementSizesInput({ XS: 2, S: 3, M: 4, L: 3, XL: 1, XXL: 1 });
+
+    expect(result).toContainEqual({ size: 'size_xs', count: 2 });
+    expect(result).toContainEqual({ size: 'size_2xl', count: 1 });
+    expect(result).toContainEqual({ size: 'size_other', count: 0 });
+    expect(result.filter(({ size }) => size === 'size_2xl')).toHaveLength(1);
+  });
+
+  it('rejects invalid-only input instead of clearing every size', () => {
+    expect(() => buildReplacementSizesInput({ S: -1 })).toThrow(/valid size count/i);
   });
 });
 
