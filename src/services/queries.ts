@@ -35,6 +35,9 @@ export const SEARCH_INVOICES_QUERY = `
       sortOn: VISUAL_ID
     ) {
       nodes {
+        ... on Invoice {
+          ${QUOTE_FIELDS}
+        }
         ... on Quote {
           ${QUOTE_FIELDS}
         }
@@ -48,6 +51,32 @@ export const GET_ORDER_DETAIL_QUERY = `
   query($first: Int, $query: String) {
     orders(first: $first, query: $query, sortOn: VISUAL_ID) {
       nodes {
+        ... on Invoice {
+          id visualId nickname total subtotal totalUntaxed totalQuantity
+          amountPaid amountOutstanding createdAt dueAt invoiceAt startAt
+          paidInFull productionNote customerNote tags merch
+          status { id name color }
+          contact { id fullName email }
+          owner { id email }
+          deliveryMethod { id name }
+          shippingAddress { address1 city state zipCode }
+          billingAddress { address1 city state zipCode }
+          lineItemGroups {
+            nodes {
+              id position
+              imprints { nodes { id typeOfWork { id name } details } }
+              lineItems {
+                nodes {
+                  id description color itemNumber items price position taxed markupPercentage
+                  category { id name }
+                  product { id description itemNumber brand color }
+                  sizes { size count }
+                }
+              }
+            }
+          }
+          fees { nodes { id description amount } }
+        }
         ... on Quote {
           id visualId nickname total subtotal totalUntaxed totalQuantity
           amountPaid amountOutstanding createdAt dueAt invoiceAt startAt
@@ -136,6 +165,13 @@ export const ORDERS_PAGINATED_QUERY = `
       sortOn: VISUAL_ID
     ) {
       nodes {
+        ... on Invoice {
+          id visualId nickname total totalQuantity
+          amountPaid amountOutstanding paidInFull
+          dueAt startAt createdAt
+          status { id name color }
+          contact { id fullName }
+        }
         ... on Quote {
           id visualId nickname total totalQuantity
           amountPaid amountOutstanding paidInFull
