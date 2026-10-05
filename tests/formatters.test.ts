@@ -74,9 +74,32 @@ describe('parseSizesToInput', () => {
   it('throws on unknown sizes', () => {
     expect(() => parseSizesToInput({ FOO: 5 })).toThrow(/Unknown size/);
   });
-  it('skips negative or NaN counts silently', () => {
-    expect(parseSizesToInput({ S: -1 })).toEqual([]);
-    expect(parseSizesToInput({ S: 'abc' })).toEqual([]);
+  it('preserves explicit clears and zero, without inventing omitted slots', () => {
+    expect(parseSizesToInput({ S: null, M: 0, L: ' 012 ' })).toEqual([
+      { size: 'size_s', count: null },
+      { size: 'size_m', count: 0 },
+      { size: 'size_l', count: 12 },
+    ]);
+  });
+  it.each([2147483647, '2147483647'])('accepts the GraphQL Int maximum %s', (count) => {
+    expect(parseSizesToInput({ S: count })).toEqual([{ size: 'size_s', count: 2147483647 }]);
+  });
+  it.each([-1, 1.5, NaN, Infinity, -Infinity, '', ' ', 'abc', '12shirts',
+    '1.5', '-1', '1e2', '0x10', 2147483648, '2147483648',
+    Number.MAX_SAFE_INTEGER + 1, '9007199254740992'])('rejects invalid count %s', (count) => {
+    expect(() => parseSizesToInput({ M: 2, S: count })).toThrow();
+  });
+  it.each<Record<string, number | string | null>>([{ XXL: 1, '2XL': 2 }, { S: null, size_s: 0 }, { M: 1, m: 1 }])(
+    'rejects duplicate canonical sizes %j', (sizes) => {
+      expect(() => parseSizesToInput(sizes)).toThrow(/Duplicate size/);
+    },
+  );
+  it.each(['__proto__', 'constructor', 'prototype'])('rejects own prototype-related key %s', (key) => {
+    const sizes = JSON.parse(`{"${key}":1}`) as Record<string, number>;
+    expect(() => parseSizesToInput(sizes)).toThrow(/prototype-related key/i);
+  });
+  it('does not resolve aliases through the alias table prototype', () => {
+    expect(() => parseSizesToInput({ constructor: 1 })).toThrow(/prototype-related key/i);
   });
 });
 

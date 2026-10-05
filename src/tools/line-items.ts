@@ -14,6 +14,7 @@ import {
 } from '../services/queries.js';
 import {
   formatCurrency,
+  formatMutationSizes,
   formatSizes,
   parseSizesToInput,
 } from '../services/formatters.js';
@@ -27,8 +28,13 @@ import {
 } from '../schemas/index.js';
 import { ResponseFormat, type LineItem, type LineItemMutationResponse } from '../types.js';
 import { toolResult } from './_helpers.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
-function renderMutationMarkdown(item: LineItem | undefined, action: string): string {
+function renderMutationMarkdown(
+  item: LineItem | undefined,
+  action: string,
+  showAllSizes = false,
+): string {
   if (!item) return `Line item ${action} returned no result.`;
   const lines: string[] = [`# Line item ${action} successfully`, '', `**ID**: \`${item.id}\``];
   if (item.description) lines.push(`**Description**: ${item.description}`);
@@ -38,7 +44,9 @@ function renderMutationMarkdown(item: LineItem | undefined, action: string): str
   lines.push(`**Total Qty**: ${item.items ?? 'N/A'}`);
   lines.push(`**Position**: ${item.position}`);
   lines.push(`**Taxed**: ${item.taxed ? 'Yes' : 'No'}`);
-  const sizeStr = formatSizes(item.sizes);
+  const sizeStr = showAllSizes && Array.isArray(item.sizes)
+    ? formatMutationSizes(item.sizes)
+    : formatSizes(item.sizes);
   if (sizeStr) lines.push(`**Sizes**: ${sizeStr}`);
   if (item.lineItemGroup) {
     lines.push(
@@ -48,6 +56,53 @@ function renderMutationMarkdown(item: LineItem | undefined, action: string): str
     );
   }
   return lines.join('\n');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function reconcileSizeMutation(
+  targetId: string,
+  requested: ReturnType<typeof parseSizesToInput>,
+  observedValue: unknown,
+): { item?: LineItem; error?: CallToolResult } {
+  const observed = observedValue ?? null;
+  const observedRecord = isRecord(observedValue) ? observedValue : undefined;
+  let valid = observedRecord?.id === targetId && Array.isArray(observedRecord.sizes);
+  const returned = new Map<string, number | null>();
+  if (valid && observedRecord) {
+    for (const entry of observedRecord.sizes as unknown[]) {
+      if (!isRecord(entry) || typeof entry.size !== 'string' ||
+          (entry.count !== null && (typeof entry.count !== 'number' || !Number.isInteger(entry.count) ||
+            entry.count < 0 || entry.count > 2147483647)) ||
+          returned.has(entry.size)) {
+        valid = false;
+        break;
+      }
+      returned.set(entry.size, entry.count as number | null);
+    }
+  }
+  if (valid) {
+    valid = requested.every(({ size, count }) => returned.has(size) && returned.get(size) === count);
+  }
+  if (valid) return { item: observedValue as unknown as LineItem };
+
+  const evidence = {
+    status: 'reconciliation_required',
+    target: { id: targetId },
+    requested,
+    observed,
+  };
+  return {
+    error: {
+      ...toolResult(
+        `Reconciliation required for line item \`${targetId}\`: the mutation response did not exactly confirm every requested size value. No retry was attempted; re-read the order before deciding whether to retry.`,
+        evidence,
+      ),
+      isError: true,
+    },
+  };
 }
 
 export function registerLineItemTools(server: McpServer): void {
@@ -61,7 +116,9 @@ Requires the line item group ID (get it from printavo_get_invoice_detail).
 Returns the created line item with its new ID.
 
 Sizes accept friendly names (S, M, L, XL, 2XL, ...) or Printavo enum values
-(size_s, size_m, ...). Counts must be non-negative integers.`,
+(size_s, size_m, ...). Counts must be integers from 0 through 2147483647
+or equivalent numeric strings. An explicitly supplied empty sizes object is sent
+as an empty list; upstream meaning should be verified before using it deliberately.`,
       inputSchema: AddLineItemSchema.shape,
       annotations: {
         readOnlyHint: false,
@@ -78,6 +135,7 @@ Sizes accept friendly names (S, M, L, XL, 2XL, ...) or Printavo enum values
       };
       if (args.item_number != null) input.itemNumber = args.item_number;
       if (args.color != null) input.color = args.color;
+      if (args.category_id != null) input.category = { id: args.category_id };
       if (args.price != null) input.price = args.price;
       if (args.taxed != null) input.taxed = args.taxed;
       if (args.sizes) input.sizes = parseSizesToInput(args.sizes);
@@ -102,7 +160,7 @@ Sizes accept friendly names (S, M, L, XL, 2XL, ...) or Printavo enum values
       title: 'Update Printavo Line Item',
       description: `MUTATION. Update an existing line item on an invoice.
 
-Can change description, item number, color, price, position, and/or taxed status.
+Can change description, item number, color, category, price, position, and/or taxed status.
 Use printavo_update_line_item_sizes to change size quantities.
 
 NOTE: position is required by the Printavo API even if you're not changing it —
@@ -121,6 +179,7 @@ get the current value from printavo_get_invoice_detail.`,
       if (args.description != null) input.description = args.description;
       if (args.item_number != null) input.itemNumber = args.item_number;
       if (args.color != null) input.color = args.color;
+      if (args.category_id != null) input.category = { id: args.category_id };
       if (args.price != null) input.price = args.price;
       if (args.taxed != null) input.taxed = args.taxed;
 
@@ -142,10 +201,15 @@ get the current value from printavo_get_invoice_detail.`,
     'printavo_update_line_item_sizes',
     {
       title: 'Update Printavo Line Item Sizes',
-      description: `MUTATION. Replace the size quantities for an existing line item.
+      description: `MUTATION. Send supplied size quantities for an existing line item.
 
-Any size not included in the input will be set to 0. Use printavo_update_line_item
-for non-size fields.
+Omitted entries are not sent. Explicit null is sent as a clear request; 0 is sent as
+a literal zero. Upstream persistence and merge behavior remain unverified until a
+controlled live test. Counts must be integers from 0 through 2147483647 or equivalent
+numeric strings. Friendly names (S, M, XXL, ...) and Printavo enums (size_s, ...) are
+accepted; duplicate aliases for the same slot are rejected. Use
+printavo_update_line_item for non-size fields. Re-read the order after updating to
+verify persisted sizes and totals.
 
 NOTE: position is required by the Printavo API — get it from printavo_get_invoice_detail.`,
       inputSchema: UpdateLineItemSizesSchema.shape,
@@ -166,11 +230,13 @@ NOTE: position is required by the Printavo API — get it from printavo_get_invo
         id: args.id,
         input,
       });
-      const item = data.lineItemUpdate;
+      const reconciliation = reconcileSizeMutation(args.id, input.sizes, data.lineItemUpdate);
+      if (reconciliation.error) return reconciliation.error;
+      const item = reconciliation.item!;
       const text =
         args.response_format === ResponseFormat.JSON
           ? JSON.stringify(item, null, 2)
-          : renderMutationMarkdown(item, 'sizes updated');
+          : renderMutationMarkdown(item, 'sizes updated', true);
       return toolResult(text, item);
     },
   );

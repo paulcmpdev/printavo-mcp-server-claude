@@ -223,6 +223,7 @@ export const LINE_ITEM_CREATE_MUTATION = `
   mutation($lineItemGroupId: ID!, $input: LineItemCreateInput!) {
     lineItemCreate(lineItemGroupId: $lineItemGroupId, input: $input) {
       id description color itemNumber items price position taxed
+      category { id name }
       sizes { size count }
       lineItemGroup { id position }
     }
@@ -233,6 +234,7 @@ export const LINE_ITEM_UPDATE_MUTATION = `
   mutation($id: ID!, $input: LineItemInput!) {
     lineItemUpdate(id: $id, input: $input) {
       id description color itemNumber items price position taxed
+      category { id name }
       sizes { size count }
       lineItemGroup { id position }
     }
