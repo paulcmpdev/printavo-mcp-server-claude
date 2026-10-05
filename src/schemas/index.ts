@@ -7,6 +7,7 @@
 
 import { z } from 'zod';
 import { ResponseFormat } from '../types.js';
+import { parseSizesToInput } from '../services/formatters.js';
 
 const ResponseFormatSchema = z
   .nativeEnum(ResponseFormat)
@@ -218,8 +219,57 @@ export type CalculateMatrixPriceInput = z.infer<typeof CalculateMatrixPriceSchem
 // Mutation schemas
 // ---------------------------------------------------------------------------
 
+const SizeQuantitySchema = z.union([
+  z.number().int().min(0).max(2147483647),
+  z.string().regex(/^\s*\d+\s*$/, 'Expected an integer numeric string').refine(
+    (value) => Number(value) <= 2147483647, 'Count exceeds GraphQL Int maximum (2147483647)',
+  ),
+]);
+
+const PositionSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(2147483647);
+
+const CategoryIdSchema = z
+  .string()
+  .min(1)
+  .refine((value) => value.trim().length > 0, 'category_id must not be whitespace-only')
+  .describe('Printavo category ID. Sent as category: { id: category_id }.');
+
+function preserveAndValidateSizeMap(value: unknown, ctx: z.RefinementCtx): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'sizes must be a plain object without inherited properties',
+    });
+    return value;
+  }
+  for (const key of Object.keys(value)) {
+    if (['__proto__', 'constructor', 'prototype'].includes(key.toLowerCase())) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Invalid prototype-related size key: "${key}"`,
+      });
+    }
+  }
+  return value;
+}
+
+function validateSizes(sizes: Record<string, number | string | null>, ctx: z.RefinementCtx): void {
+  try {
+    parseSizesToInput(sizes);
+  } catch (error) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: (error as Error).message });
+  }
+}
+
 const SizesObjectSchema = z
-  .record(z.string().min(1), z.union([z.number(), z.string()]))
+  .preprocess(preserveAndValidateSizeMap, z.record(z.string().min(1), SizeQuantitySchema))
+  .superRefine(validateSizes)
   .describe(
     'Size quantities as key→count. Keys: YXS,YS,YM,YL,YXL,XS,S,M,L,XL,2XL,3XL,4XL,5XL,6XL,OTHER,6M,12M,18M,24M,2T,3T,4T,5T. Example: { "S": 5, "M": 10 }',
   );
@@ -236,12 +286,9 @@ export const AddLineItemSchema = z
       .describe('Style description (e.g. "Gildan 5000 Heavy Cotton Tee").'),
     item_number: z.string().min(1).optional().describe('Item/style number (e.g. "G5000").'),
     color: z.string().min(1).optional().describe('Color of the item (e.g. "Black").'),
+    category_id: CategoryIdSchema.optional(),
     price: z.number().min(0).optional().describe('Price per item in dollars.'),
-    position: z
-      .number()
-      .int()
-      .min(1)
-      .describe('Position of this line item within the group (1-based).'),
+    position: PositionSchema.describe('Position of this line item within the group.'),
     taxed: z.boolean().optional().describe('Whether this line item is taxable. Defaults to true.'),
     sizes: SizesObjectSchema.optional(),
     response_format: ResponseFormatSchema,
@@ -258,12 +305,9 @@ export const UpdateLineItemSchema = z
     description: z.string().min(1).optional(),
     item_number: z.string().min(1).optional(),
     color: z.string().min(1).optional(),
+    category_id: CategoryIdSchema.optional(),
     price: z.number().min(0).optional(),
-    position: z
-      .number()
-      .int()
-      .min(1)
-      .describe('Position of this line item within the group (1-based). Required by the API.'),
+    position: PositionSchema.describe('Position of this line item within the group. Required by the API.'),
     taxed: z.boolean().optional(),
     response_format: ResponseFormatSchema,
   })
@@ -273,14 +317,16 @@ export type UpdateLineItemInput = z.infer<typeof UpdateLineItemSchema>;
 export const UpdateLineItemSizesSchema = z
   .object({
     id: z.string().min(1).describe('The line item ID to update sizes for.'),
-    position: z
-      .number()
-      .int()
-      .min(1)
-      .describe('Current position of the line item (required by the API).'),
-    sizes: SizesObjectSchema.refine((s) => Object.keys(s).length > 0, {
-      message: 'sizes must be a non-empty object',
-    }),
+    position: PositionSchema.describe('Current position of the line item (required by the API).'),
+    sizes: z.preprocess(
+      preserveAndValidateSizeMap,
+      z.record(z.string().min(1), SizeQuantitySchema.nullable()),
+    )
+      .superRefine(validateSizes)
+      .refine((s) => Object.keys(s).length > 0, {
+        message: 'sizes must be a non-empty object',
+      })
+      .describe('Size updates using friendly names (S, M, XXL, etc.) or Printavo enum values (size_s, etc.). Only supplied entries are sent. Null is sent as a clear request; upstream persistence behavior is unverified. Counts must be integers from 0 through 2147483647 or equivalent numeric strings. Duplicate aliases are rejected.'),
     response_format: ResponseFormatSchema,
   })
   .strict();

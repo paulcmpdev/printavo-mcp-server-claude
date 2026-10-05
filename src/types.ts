@@ -62,7 +62,14 @@ export interface Category {
 
 export interface SizeCount {
   size: string;
-  count: number;
+  /** GraphQL mutation responses may report an explicit cleared slot as null. */
+  count: number | null;
+}
+
+/** Mutation input is nullable for explicit size clears; response counts stay separate. */
+export interface SizeCountInput {
+  size: string;
+  count: number | null;
 }
 
 export interface LineItem {

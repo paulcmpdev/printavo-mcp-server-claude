@@ -3,7 +3,7 @@
  * human-readable Markdown output.
  */
 
-import type { Address, SizeCount } from '../types.js';
+import type { Address, SizeCount, SizeCountInput } from '../types.js';
 
 export function formatCurrency(value: number | string | null | undefined): string {
   if (value == null) return 'N/A';
@@ -33,9 +33,14 @@ export function formatAddress(addr: Address | null | undefined): string | null {
 export function formatSizes(sizes: SizeCount[] | null | undefined): string {
   if (!sizes || !Array.isArray(sizes)) return '';
   return sizes
-    .filter((s) => s.count > 0)
+    .filter((s) => typeof s.count === 'number' && s.count > 0)
     .map((s) => `${s.size}:${s.count}`)
     .join(' ');
+}
+
+/** Mutation evidence must retain explicit null and zero values. */
+export function formatMutationSizes(sizes: SizeCount[]): string {
+  return sizes.map(({ size, count }) => `${size}:${count === null ? '(blank)' : count}`).join(' ');
 }
 
 /**
@@ -72,6 +77,8 @@ export const SIZE_NAME_TO_ENUM: Record<string, string> = {
 };
 
 const VALID_SIZE_ENUMS = new Set(Object.values(SIZE_NAME_TO_ENUM));
+const PROTOTYPE_RELATED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const GRAPHQL_INT_MAX = 2147483647;
 
 const VALID_SIZE_KEYS = Array.from(
   new Set(Object.keys(SIZE_NAME_TO_ENUM).map((k) => k.toUpperCase())),
@@ -79,18 +86,35 @@ const VALID_SIZE_KEYS = Array.from(
   .sort()
   .join(', ');
 
-export function parseSizesToInput(sizes: Record<string, number | string>): SizeCount[] {
-  const result: SizeCount[] = [];
+export function parseSizesToInput(sizes: Record<string, number | string | null>): SizeCountInput[] {
+  const prototype = Object.getPrototypeOf(sizes);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error('Sizes must be a plain object without inherited properties.');
+  }
+  const result: SizeCountInput[] = [];
+  const seen = new Set<string>();
   for (const [key, count] of Object.entries(sizes)) {
-    const intCount = typeof count === 'number' ? count : parseInt(String(count), 10);
-    if (Number.isNaN(intCount) || intCount < 0) continue;
+    if (PROTOTYPE_RELATED_KEYS.has(key.toLowerCase())) {
+      throw new Error(`Invalid prototype-related key: "${key}".`);
+    }
+    const intCount = count === null ? null : typeof count === 'number' ? count : Number(count.trim());
+    if (count !== null && (
+      (typeof count === 'string' && !/^\d+$/.test(count.trim())) ||
+      !Number.isInteger(intCount) || intCount! < 0 || intCount! > GRAPHQL_INT_MAX
+    )) {
+      throw new Error(`Invalid count for size "${key}": expected an integer from 0 to ${GRAPHQL_INT_MAX}, or null.`);
+    }
 
     const upperKey = key.toUpperCase();
-    let enumValue = SIZE_NAME_TO_ENUM[upperKey];
+    let enumValue = Object.hasOwn(SIZE_NAME_TO_ENUM, upperKey)
+      ? SIZE_NAME_TO_ENUM[upperKey]
+      : undefined;
     if (!enumValue && VALID_SIZE_ENUMS.has(key)) enumValue = key;
     if (!enumValue) {
       throw new Error(`Unknown size: "${key}". Valid: ${VALID_SIZE_KEYS}`);
     }
+    if (seen.has(enumValue)) throw new Error(`Duplicate size: "${key}" maps to ${enumValue}.`);
+    seen.add(enumValue);
     result.push({ size: enumValue, count: intCount });
   }
   return result;
